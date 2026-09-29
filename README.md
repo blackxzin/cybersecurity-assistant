@@ -7,7 +7,7 @@ agentes especializados, ferramentas ofensivas **com confirmação humana**,
 terminal controlado, dashboard e uma **personagem animada** como interface visual.
 
 <p align="center">
-  <a href="https://blackxzin.github.io/cyber-assitente/"><strong>▶ Ver demo ao vivo →</strong></a>
+  <a href="https://blackxzin.github.io/cybersecurity-assistant/"><strong>▶ Ver demo ao vivo →</strong></a>
 </p>
 
 <p align="center">
