@@ -4,7 +4,7 @@ Flow: sanitize → route through agents → (tools via Safety Layer) →
 LLM synthesis → stream tokens to the client while persisting history.
 """
 
-import json
+import asyncio
 
 from ai.prompts import SYSTEM_PROMPT
 from ai.providers.base import LLMProvider
@@ -45,19 +45,15 @@ class ChatService:
         try:
             result = await self.orchestrator.run(
                 clean, history, on_delta=on_delta, on_progress=on_progress)
+        except asyncio.CancelledError:
+            database.save_messages([
+                {"role": "user", "content": clean},
+                {"role": "assistant", "content": "Execução cancelada pelo operador."},
+            ])
+            raise
         except (TimeoutError, RuntimeError) as exc:
             log_event("danger", "chat", f"erro não tratado: {exc}")
             raise
-
-        # Persist each tool call for the audit trail.
-        for call in self.orchestrator.last_tool_calls:
-            database.log_tool_call(
-                call.get("tool", "?"),
-                {},
-                call.get("result", ""),
-                risk="info",
-                status=call.get("status", "ok"),
-            )
 
         final = sanitize_text(result)
         conversation_id = database.save_messages(

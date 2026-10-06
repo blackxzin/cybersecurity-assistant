@@ -36,6 +36,9 @@ from security import scope as scope_module
 from services.chat import ChatService
 from services.report import generate_pentest_report
 from services import watcher
+from services.tasks import manager, current_task
+from database.context import project_id, audit_enabled
+from api.projects import router as projects_router
 from tools.confirm import ConfirmationStore
 from tools.terminal import executor
 from tools import build_registry
@@ -52,6 +55,7 @@ _watcher_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global _watcher_task
+    database.init_db()
     if settings.watcher_enabled:
         _watcher_task = asyncio.create_task(watcher.run_forever())
     yield
@@ -59,10 +63,15 @@ async def lifespan(_app: FastAPI):
         _watcher_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _watcher_task
+    for work in list(manager.works.values()):
+        if work.finished is None:
+            await manager.cancel(work)
     await _provider.aclose()
 
 
 app = FastAPI(title="Cybersecurity AI", version="0.1.0", lifespan=lifespan)
+
+app.include_router(projects_router)
 
 _ALLOWED_ORIGINS = {f"http://127.0.0.1:{settings.port}", f"http://localhost:{settings.port}"}
 
@@ -96,6 +105,28 @@ async def _enforce_same_origin(request: Request, call_next):
         if origin is None and sec_fetch_site not in (None, "same-origin", "none"):
             return JSONResponse(status_code=403, content={"detail": "cross-origin request refused"})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _project_context(request: Request, call_next):
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    raw = request.headers.get("x-project-id", "1")
+    try:
+        value = int(raw)
+    except ValueError:
+        return JSONResponse(status_code=422, content={"detail": "Projeto inválido."})
+    with database.db() as conn:
+        exists = conn.execute("SELECT id FROM projects WHERE id=?", (value,)).fetchone() if 0 < value < 2**63 else None
+    if not exists:
+        return JSONResponse(status_code=404, content={"detail": "Projeto não encontrado."})
+    token = project_id.set(value)
+    audit = audit_enabled.set(request.url.path in ("/api/chat", "/api/terminal") or request.url.path.startswith("/api/actions/"))
+    try:
+        return await call_next(request)
+    finally:
+        project_id.reset(token)
+        audit_enabled.reset(audit)
 
 
 # Rotas /api/* que devem responder mesmo sem token — health check e a
@@ -195,6 +226,15 @@ async def chat(body: dict):
     if not message:
         raise HTTPException(status_code=400, detail="Mensagem vazia.")
 
+    if body.get("task_id"):
+        import uuid
+        try:
+            body["task_id"] = str(uuid.UUID(str(body["task_id"])))
+        except ValueError:
+            raise HTTPException(422, "Identificador de tarefa inválido.")
+        if body["task_id"] in manager.works:
+            raise HTTPException(409, "Identificador de tarefa já utilizado.")
+
     async def event_stream():
         # Producer/consumer: the orchestrator streams the growing answer into
         # a queue via on_delta while the model generates; the consumer forwards
@@ -210,26 +250,42 @@ async def chat(body: dict):
 
         async def on_progress(status: str) -> None:
             # status curto das fases lentas antes da síntese (decidir/rodar
-            # ferramenta) — pintado como content e substituído pelo 1º token real.
-            await queue.put({"content": status})
+            # ferramenta), separado dos tokens da resposta final.
+            work = current_task.get()
+            if work:
+                work.progress(status)
+            await queue.put({"progress": status})
 
         async def producer() -> None:
             try:
-                result = await _chat.stream(message, on_delta=on_delta,
+                service = ChatService(_provider, _registry, _store, _research_provider)
+                result = await service.stream(message, on_delta=on_delta,
                                             on_progress=on_progress)
                 final = {"content": result["content"]}
                 if result.get("pending"):
                     final["pending"] = result["pending"]
+                    work = current_task.get()
+                    if work:
+                        work.status = "awaiting_approval"
+                        work.progress("Aguardando aprovação do operador.")
                 await queue.put(final)
+            except asyncio.CancelledError:
+                await queue.put({"content": "Execução cancelada pelo operador.", "cancelled": True})
+                raise
             except Exception as exc:
                 msg = describe_exception(exc)
                 log_event("danger", "chat_error", msg)
                 await queue.put({"error": msg})
+                work = current_task.get()
+                if work:
+                    work.status = "error"
             finally:
                 await queue.put(done)
 
-        task = asyncio.create_task(producer())
-        yield f"data: {json.dumps({'content': '⏳ Analisando…'}, ensure_ascii=False)}\n\n"
+        work = manager.start(producer, body.get("task_id"))
+        task = work.task
+        task.add_done_callback(lambda _: queue.put_nowait(done))
+        yield f"data: {json.dumps({'content': '⏳ Analisando…', 'task_id': work.id}, ensure_ascii=False)}\n\n"
         try:
             while True:
                 item = await queue.get()
@@ -241,7 +297,8 @@ async def chat(body: dict):
                 yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             yield "event: done\ndata: {}\n\n"
         finally:
-            task.cancel()
+            if not task.done():
+                await manager.cancel(work)
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
@@ -294,17 +351,30 @@ async def terminal(body: dict):
 
 # --- Aprovação humana de ações (nmap, captura, OSINT...) ---
 @app.post("/api/actions/{action_id}/approve")
-async def approve_action(action_id: int) -> dict:
+async def approve_action(action_id: int, task_id: str | None = None) -> dict:
     action = _store.get(action_id)
     if action is None:
         raise HTTPException(status_code=404, detail="Ação não encontrada.")
-    text = await _store.resolve(action, True, _registry)
-    if action.status == "approved":
-        try:
-            text = await _chat.orchestrator.synthesize_approved(action_id)
-        except Exception as exc:
-            log_event("warning", "confirmation", f"síntese falhou: {exc}")
-    return {"status": action.status, "content": text}
+    if action.status != "pending":
+        raise HTTPException(409, "Ação já resolvida ou em execução.")
+    async def execute():
+        text = await _store.resolve(action, True, _registry)
+        if action.status == "approved":
+            service = ChatService(_provider, _registry, _store, _research_provider)
+            text = await service.orchestrator.synthesize_approved(action_id)
+        database.save_messages([{"role": "assistant", "content": text}])
+        return {"status": action.status, "content": text}
+    try:
+        work = manager.start(execute, task_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    try:
+        return await asyncio.shield(work.task)
+    except asyncio.CancelledError:
+        await manager.cancel(work)
+        database.save_messages([{"role": "assistant", "content": "Execução cancelada pelo operador."}])
+        return {"status": "cancelled", "content": "Execução cancelada pelo operador."}
+
 
 
 @app.post("/api/actions/{action_id}/deny")
@@ -427,7 +497,7 @@ async def system_summary() -> dict:
 async def security_events() -> dict:
     with database.db() as conn:
         rows = conn.execute(
-            "SELECT id, level, category, description, created_at FROM security_events ORDER BY id DESC LIMIT 20"
+            "SELECT id, level, category, description, created_at FROM security_events WHERE project_id=? ORDER BY id DESC LIMIT 20", (project_id.get(),)
         ).fetchall()
     return {"events": [dict(r) for r in rows]}
 
@@ -436,7 +506,7 @@ async def security_events() -> dict:
 async def alerts() -> dict:
     with database.db() as conn:
         rows = conn.execute(
-            "SELECT id, severity, title, description, acknowledged, created_at FROM alerts ORDER BY id DESC LIMIT 20"
+            "SELECT id, severity, title, description, acknowledged, created_at FROM alerts WHERE project_id=? ORDER BY id DESC LIMIT 20", (project_id.get(),)
         ).fetchall()
     return {"alerts": [dict(r) for r in rows]}
 
@@ -447,7 +517,7 @@ async def ack_alert(body: dict) -> dict:
     if not alert_id:
         raise HTTPException(status_code=400, detail="id vazio")
     with database.db() as conn:
-        conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
+        conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=? AND project_id=?", (alert_id, project_id.get()))
     return {"ok": True}
 
 

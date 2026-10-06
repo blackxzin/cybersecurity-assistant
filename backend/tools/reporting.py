@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import settings
+from database.context import project_id
 from services.report import generate_pentest_report
 
 try:
@@ -66,7 +67,7 @@ async def tool_export_report(args: dict) -> str:
     if fmt not in _FORMATS:
         return f"formato inválido: {fmt!r}. Use 'md' ou 'html'."
     md = generate_pentest_report()
-    out_dir = Path(settings.reports_dir)
+    out_dir = Path(settings.reports_dir) / f"project-{project_id.get()}"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     base = _safe_slug(str(args.get("name") or f"pentest-{stamp}"))

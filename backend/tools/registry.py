@@ -45,10 +45,42 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Ferramenta desconhecida: {name}")
-        result = tool.fn(args)
-        if asyncio.iscoroutine(result):
-            return await result
-        return result
+        from database.context import audit_enabled
+        from database import db as database
+        from services.tasks import current_task
+        from security.sanitize import sanitize_text
+        from security.scope import check_target
+        from agents import _looks_like_tool_error
+        work = current_task.get()
+        if work:
+            work.progress(f"Executando {name}")
+        status, output = "ok", ""
+        try:
+            scope_error = check_target(tool.target_arg, args)
+            if scope_error:
+                status, output = "blocked", scope_error
+                return output
+            result = tool.fn(args)
+            output = await result if asyncio.iscoroutine(result) else result
+            output = sanitize_text(str(output))
+            if _looks_like_tool_error(output):
+                status = "error"
+            return output
+        except asyncio.CancelledError:
+            status, output = "cancelled", "Execução cancelada pelo operador."
+            raise
+        except Exception as exc:
+            status, output = "error", sanitize_text(str(exc))
+            raise
+        finally:
+            if audit_enabled.get():
+                # Store evidence before synthesis, including approved/cancelled calls.
+                safe_args = {k: ("[REDACTED]" if any(s in k.lower() for s in
+                             ("password", "token", "cookie", "secret", "api_key")) else v)
+                             for k, v in args.items()}
+                safe_args = {k: sanitize_text(v) if isinstance(v, str) else v for k, v in safe_args.items()}
+                database.log_tool_call(name, safe_args, output, risk=tool.risk, status=status)
+
 
 
 def read_only(name: str, description: str, fn: ToolFn):

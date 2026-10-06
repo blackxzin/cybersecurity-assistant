@@ -13,6 +13,7 @@ Rules enforced here (independent of what the AI thinks it wants):
 """
 
 import asyncio
+from services.processes import communicate
 from typing import Any
 
 from security.sanitize import sanitize_text
@@ -117,12 +118,11 @@ async def _run(argv: list[str]) -> tuple[str, str]:
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), TIMEOUT_SECONDS)
+            out, err = await communicate(proc, TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
             raise TimeoutError(
                 f"Comando excedeu {TIMEOUT_SECONDS}s e foi encerrado."
             )

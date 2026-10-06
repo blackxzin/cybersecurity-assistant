@@ -37,7 +37,7 @@ class PlanExecutor:
         self.registry = registry
         self.store = store
 
-    async def execute(self, steps: list[dict]) -> tuple[list[StepResult], dict | None]:
+    async def execute(self, steps: list[dict], on_progress=None) -> tuple[list[StepResult], dict | None]:
         """Execute plan steps sequentially.
 
         Returns (results_so_far, pending_info_or_None).
@@ -46,7 +46,9 @@ class PlanExecutor:
         results: list[StepResult] = []
         pending: dict | None = None
 
-        for step in steps:
+        for index, step in enumerate(steps, 1):
+            if on_progress:
+                await on_progress(f"Passo {index}/{len(steps)}: {step.get('description', '')}")
             step_id = step.get("id", 0)
             description = step.get("description", "")
             tool_name = step.get("tool")
@@ -101,7 +103,9 @@ class PlanExecutor:
                 output = sanitize_text(await self.registry.run(tool_name, args))
                 dur = round(time.monotonic() - t0, 3)
                 log_tool("tool", tool=tool_name, status="ok", duration=dur)
-                results.append(StepResult(step_id, description, tool_name, "ok", output))
+                from agents import _looks_like_tool_error
+                status = "error" if _looks_like_tool_error(output) else "ok"
+                results.append(StepResult(step_id, description, tool_name, status, output))
             except Exception as exc:
                 dur = round(time.monotonic() - t0, 3)
                 log_tool("tool", tool=tool_name, status="error", duration=dur,

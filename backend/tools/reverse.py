@@ -11,6 +11,7 @@ Tudo aqui é análise ESTÁTICA — lê/parseia bytes do arquivo, nunca executa
 a amostra (inclusive YARA: casamento de padrão, não detonação)."""
 
 import asyncio
+from services.processes import communicate
 
 from pathlib import Path
 
@@ -28,17 +29,18 @@ async def _run(argv: list[str], timeout: int = TIMEOUT_SECONDS) -> str:
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         return f"erro: ferramenta não encontrada ({exc.filename})"
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        out, err = await communicate(proc, timeout)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
         return f"erro: comando excedeu {timeout}s e foi encerrado."
     stdout = sanitize_text(out.decode(errors="replace"))
     stderr = sanitize_text(err.decode(errors="replace"))
+    if type(proc.returncode) is int and proc.returncode != 0:
+        return f"erro: comando terminou com código {proc.returncode}.\n{stdout[:MAX_OUTPUT_CHARS]}\n{stderr[:400]}"
     if not stdout and stderr:
         return f"erro: {stderr.strip()[:400]}"
     if len(stdout) > MAX_OUTPUT_CHARS:

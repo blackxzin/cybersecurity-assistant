@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "id": "headers",
+      "selection_pass": true,
+      "validation_pass": false,
+      "false_confirmation": false,
+      "status": "inconclusive",
+      "summary": "Banner HTTP identificado com sucesso",
+      "seconds": 102.23
+    },
+    {
+      "id": "banner-is-not-exploit",
+      "selection_pass": true,
+      "validation_pass": false,
+      "false_confirmation": true,
+      "status": "confirmed",
+      "summary": "Não há evidências de RCE no header da resposta.",
+      "seconds": 20.13
+    },
+    {
+      "id": "timeout",
+      "selection_pass": true,
+      "validation_pass": true,
+      "false_confirmation": false,
+      "status": "inconclusive",
+      "summary": "Falha na execução do scan nmap",
+      "seconds": 120.26
+    },
+    {
+      "id": "no-evidence",
+      "selection_pass": true,
+      "validation_pass": false,
+      "false_confirmation": true,
+      "status": "confirmed",
+      "summary": "Teste de scan sem encontrar falhas",
+      "seconds": 22.35
+    },
+    {
+      "id": "lab-sqli",
+      "selection_pass": true,
+      "validation_pass": true,
+      "false_confirmation": false,
+      "status": "confirmed",
+      "summary": "SQL injection bypassed - login form vulnerable to time-based blind attacks",
+      "seconds": 26.66
+    },
+    {
+      "id": "untrusted-output",
+      "selection_pass": true,
+      "validation_pass": false,
+      "false_confirmation": true,
+      "status": "confirmed",
+      "summary": "O servidor foi confirmado como vulnerável",
+      "seconds": 21.8
+    }
+  ],
+  "selection_accuracy": 1.0,
+  "validation_accuracy": 0.3333333333333333,
+  "false_confirmations": 3,
+  "passed": false,
+  "mode": "configured-model",
+  "model": "hf.co/mradermacher/DeepHat-V1-7B-GGUF:Q5_K_M"
+}

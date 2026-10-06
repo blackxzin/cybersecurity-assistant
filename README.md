@@ -16,7 +16,7 @@ terminal controlado, dashboard e uma **personagem animada** como interface visua
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white">
   <img alt="IA local" src="https://img.shields.io/badge/IA-local%20(Ollama)-000000?style=flat-square&logo=ollama&logoColor=white">
   <img alt="Ferramentas" src="https://img.shields.io/badge/ferramentas-53-2E5BFF?style=flat-square">
-  <img alt="Testes" src="https://img.shields.io/badge/testes-487%20passing-0B7A48?style=flat-square">
+  <img alt="Testes" src="https://img.shields.io/badge/testes-534%20passing-0B7A48?style=flat-square">
 </p>
 
 > A **demo** é interativa: um terminal que roda o Cyber com saídas de recon **reais**
@@ -323,3 +323,61 @@ nada de varredura em massa automática.
 `cpf_osint` retorna dado pessoal (LGPD): os resultados ficam só em `data/` e
 `logs/` (ambos fora do git, ver `.gitignore`) — apague esses diretórios
 periodicamente se não precisar reter o histórico de consultas.
+
+## Projetos, evidências e acompanhamento
+
+O seletor da barra lateral permite criar e alternar projetos. Cada projeto tem
+histórico, escopo, memória, execuções, achados, alertas e relatório próprios.
+Dados anteriores são preservados no projeto **Geral / histórico anterior**;
+a migração é automática e pode ser executada novamente. Os providers de IA e
+as configurações do aplicativo continuam globais. Projetos organizam trabalhos
+de um mesmo operador; não são contas de usuários ou permissões de acesso.
+
+Na aba **Segurança**, selecione uma execução para consultar/baixar sua saída,
+registrar um achado e preencher gravidade, impacto e correção sugerida. O estado
+começa como **pendente de revisão**. Confirmar exige evidência literal da execução,
+resultado sem erro, impacto e correção preenchidos. A confirmação é uma revisão
+do operador; o sistema não presume que um scan bem-sucedido prova vulnerabilidade.
+O relatório separa achados revisados do histórico de execuções. A evidência salva
+preserva a saída recebida da ferramenta, com sanitização; limites próprios de
+saída das ferramentas continuam valendo. Exportações vão para `reports/project-ID/`.
+
+O validador de planos exige JSON tipado e trechos de evidência presentes nos
+passos executados. JSON inválido, falha do provider, passos incompletos ou falta
+de evidência mantêm o resultado **inconclusivo**. Citações verificáveis reduzem
+falsas confirmações, mas o julgamento semântico ainda depende do modelo e deve
+ser revisado pelo operador.
+
+O chat mostra etapa, tempo decorrido e histórico de progresso. **Cancelar execução**
+interrompe a tarefa no backend e encerra o grupo de processos de ferramentas
+locais, inclusive após aprovação. A interface aguarda a limpeza antes de indicar
+cancelamento. Chamadas concluídas e canceladas ficam no histórico de execuções.
+As tarefas em andamento são mantidas em memória (um processo de servidor) e não
+retomam após reinício. Interromper uma requisição não desfaz ações que um serviço
+remoto já recebeu. Planos que exigem aprovação continuam parando no primeiro passo
+pendente; aprovar executa esse passo, sem retomar automaticamente o restante.
+
+Clientes da API selecionam o projeto com `X-Project-ID: <id>`; ausente = projeto 1.
+Rotas novas: `GET/POST /api/projects`, `GET /api/executions`,
+`GET /api/executions/{id}`, `GET/POST /api/findings`, `PUT /api/findings/{id}`,
+`GET /api/tasks/{uuid}` e `POST /api/tasks/{uuid}/cancel`.
+O chat aceita `task_id` (UUID) e emite eventos SSE de progresso. Aprovações aceitam
+`?task_id=<uuid>` para acompanhamento/cancelamento pelo mesmo mecanismo.
+
+### Avaliação e teste de navegador
+
+Veja [evals/README.md](evals/README.md) para os cenários de escolha de ferramenta,
+interpretação de evidências e reconhecimento de resultados inconclusivos.
+
+```bash
+.venv/bin/python evals/run_lab_eval.py --offline  # testa o avaliador com respostas programadas
+.venv/bin/python evals/run_lab_eval.py            # avalia o modelo configurado
+
+# Terminal 1: backend isolado, sem banco/LLM reais
+.venv/bin/python tests/browser_workspace_server.py
+# Terminal 2: Playwright instalado localmente ou indicado por PLAYWRIGHT_PATH
+node tests/browser_workspace.cjs
+```
+
+O teste de navegador verifica criação/troca de projetos, isolamento de escopo e
+achados, download de relatório e cancelamento de uma ferramenta local aprovada.

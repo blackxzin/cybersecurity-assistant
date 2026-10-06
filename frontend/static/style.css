@@ -341,3 +341,33 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgba(120,160,255,0.25); border-radius: 8px; }
+
+/* Project workspace and evidence review */
+.project-picker { padding: 12px; display: grid; gap: 8px; }
+.project-picker form, .finding-form, .finding-form label { display: grid; gap: 8px; }
+.project-picker input, .project-picker select { min-width: 0; width: 100%; box-sizing: border-box; }
+.finding-form { margin: 16px 0; max-width: 850px; }
+.finding-form textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.task-panel { padding: 10px 20px; border-top: 1px solid var(--border); }
+.task-panel details { margin-top: 8px; max-height: 160px; overflow: auto; }
+.task-panel button { margin-left: 10px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.sidebar { overflow-y: auto; }
+.project-picker input, .project-picker select,
+.finding-form input:not([type="hidden"]), .finding-form select, .finding-form textarea {
+  font: inherit; font-size: .85rem; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  min-height: 40px; width: 100%; min-width: 0;
+}
+.project-picker input:focus-visible, .project-picker select:focus-visible,
+.finding-form input:focus-visible, .finding-form select:focus-visible, .finding-form textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.task-panel { border-color: var(--line); }
+.finding-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.finding-form label:has(textarea), .finding-form > .row { grid-column: 1 / -1; }
+.finding-form #evidence-download { align-self: end; }
+@media (max-width: 700px) {
+  .finding-form { grid-template-columns: minmax(0, 1fr); }
+  .task-panel button { margin: 8px 0 0; }
+}

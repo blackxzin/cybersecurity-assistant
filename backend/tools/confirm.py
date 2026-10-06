@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 from security.errors import describe_exception
 from security.sanitize import sanitize_text
 from security.scope import check_target
+from database.context import project_id
 
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
@@ -30,6 +31,7 @@ class PendingAction:
     created_at: float
     status: str = "pending"  # pending | approved | denied | expired
     summary: str = ""
+    project_id: int = 1
     future: asyncio.Future = field(default_factory=asyncio.Future, repr=False)
 
 
@@ -46,7 +48,7 @@ class ConfirmationStore:
         async with self._lock:
             action = PendingAction(
                 id=self._next_id, tool=tool, args=args, prompt=prompt,
-                created_at=time.monotonic(), summary=summary,
+                created_at=time.monotonic(), summary=summary, project_id=project_id.get(),
             )
             self._pending[self._next_id] = action
             self._next_id += 1
@@ -64,7 +66,8 @@ class ConfirmationStore:
             action.future.set_result(None)
 
     def get(self, action_id: int) -> PendingAction | None:
-        return self._pending.get(action_id)
+        action = self._pending.get(action_id)
+        return action if action and action.project_id == project_id.get() else None
 
     async def resolve(
         self,
@@ -73,6 +76,8 @@ class ConfirmationStore:
         registry: "ToolRegistry",
     ) -> str:
         """Executa (ou nega) a ação e devolve a resposta final p/ a UI."""
+        if action.project_id != project_id.get():
+            return "⛔ Ação pertence a outro projeto."
         if action.status != "pending":
             return "⚠️ Ação já não está pendente (provavelmente expirou)."
         action.status = "approved" if approve else "denied"
@@ -97,6 +102,11 @@ class ConfirmationStore:
             result = sanitize_text(await registry.run(action.tool, action.args))
             dur = round(time.monotonic() - t0, 3)
             text = f"✅ Ação {action.id} aprovada.\n\n{result}"
+        except asyncio.CancelledError:
+            action.status = "cancelled"
+            if not action.future.done():
+                action.future.set_result("Execução cancelada pelo operador.")
+            raise
         except Exception as exc:
             dur = round(time.monotonic() - t0, 3)
             text = f"⚠️ Ação {action.id} aprovada, mas a execução falhou: {describe_exception(exc)}"

@@ -30,7 +30,7 @@ def test_safe_slug(raw, expected_prefix):
 async def test_export_markdown(tmp_path):
     out = await tool_export_report({"format": "md", "name": "teste"})
     assert "Relatório exportado" in out
-    files = list((tmp_path / "reports").glob("*.md"))
+    files = list((tmp_path / "reports" / "project-1").glob("*.md"))
     assert len(files) == 1
     assert files[0].read_text().startswith("# Relatório de Pentest")
 
@@ -38,7 +38,7 @@ async def test_export_markdown(tmp_path):
 @pytest.mark.asyncio
 async def test_export_html(tmp_path):
     out = await tool_export_report({"format": "html", "name": "teste"})
-    files = list((tmp_path / "reports").glob("*.html"))
+    files = list((tmp_path / "reports" / "project-1").glob("*.html"))
     assert len(files) == 1
     assert "<!doctype html>" in files[0].read_text()
 
@@ -60,6 +60,6 @@ async def test_export_pdf(tmp_path):
     if "fpdf2" in out:  # ambiente sem fpdf2 — aviso claro, não crash
         assert "erro" in out.lower()
         return
-    files = list((tmp_path / "reports").glob("*.pdf"))
+    files = list((tmp_path / "reports" / "project-1").glob("*.pdf"))
     assert len(files) == 1
     assert files[0].read_bytes().startswith(b"%PDF")

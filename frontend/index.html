@@ -17,6 +17,15 @@
           <div class="brand-sub">assistente pessoal</div>
         </div>
       </div>
+      <div class="project-picker">
+        <label for="project-select">Projeto atual</label>
+        <select id="project-select" disabled><option value="1">Carregando…</option></select>
+        <form id="project-form">
+          <label class="field-label" for="project-name">Novo projeto</label>
+          <input id="project-name" maxlength="120" placeholder="Nome do projeto" required />
+          <button class="btn" type="submit">Criar projeto</button>
+        </form>
+      </div>
       <nav id="nav">
         <button class="nav-item active" data-view="dashboard">
           <span>📊</span> Dashboard
@@ -58,6 +67,11 @@
               <button type="button" class="suggestion-chip" data-text="lista os processos que mais usam RAM">📊 Processos que mais usam RAM</button>
             </div>
           </div>
+        </div>
+        <div class="task-panel" aria-live="polite">
+          <span id="task-progress">Pronto para iniciar.</span>
+          <button id="task-cancel" class="btn ghost" type="button" disabled>Cancelar execução</button>
+          <details><summary>Etapas da execução</summary><ol id="task-events"></ol></details>
         </div>
         <form id="chat-form" class="composer">
           <button type="button" id="mic-btn" class="btn ghost mic" title="Segure para falar (PTT)">🎙</button>
@@ -127,6 +141,24 @@
           <div class="row">
             <a id="report-link" class="btn" href="/api/report">📄 Baixar relatório de pentest</a>
           </div>
+          <hr />
+          <h2>Achados e evidências do projeto</h2>
+          <p class="muted">Registre um achado a partir de uma execução. Revise a evidência antes de confirmar uma vulnerabilidade.</p>
+          <button id="refresh-findings" class="btn" type="button">Atualizar execuções</button>
+          <form id="finding-form" class="finding-form">
+            <input id="finding-id" type="hidden" />
+            <label>Execução de origem<select id="finding-execution" required></select></label>
+            <button id="evidence-download" type="button" class="btn">Baixar evidência da execução</button>
+            <label>Título<input id="finding-title" maxlength="200" required /></label>
+            <label>Gravidade<select id="finding-severity"><option value="info">Informativa</option><option value="low">Baixa</option><option value="medium">Média</option><option value="high">Alta</option><option value="critical">Crítica</option></select></label>
+            <label>Evidência (trecho literal da saída)<textarea id="finding-evidence" rows="5" maxlength="20000" required></textarea></label>
+            <label>Impacto<textarea id="finding-impact" rows="2" maxlength="5000"></textarea></label>
+            <label>Correção sugerida<textarea id="finding-remediation" rows="2" maxlength="5000"></textarea></label>
+            <label>Estado da revisão<select id="finding-review"><option value="pending">Pendente de revisão</option><option value="confirmed">Confirmado pelo operador</option><option value="rejected">Descartado</option><option value="resolved">Corrigido</option></select></label>
+            <div class="row"><button class="btn primary">Salvar achado</button><button id="finding-new" type="button" class="btn ghost">Novo achado</button></div>
+          </form>
+          <div id="findings-list" class="tools"></div>
+          <hr />
           <div id="tools-list" class="tools"></div>
           <hr />
           <label class="field-label">Testar classificação de um comando</label>
@@ -237,6 +269,7 @@
     </div>
   </div>
 
+  <script src="/static/workspace.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

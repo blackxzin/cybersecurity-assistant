@@ -169,7 +169,7 @@ class Orchestrator:
 
         await self._progress(f"⚙️ executando plano de {len(steps)} passo(s)…")
         executor = PlanExecutor(self.registry, self.store)
-        results, pending = await executor.execute(steps)
+        results, pending = await executor.execute(steps, on_progress=self._on_progress)
 
         for r in results:
             if r.tool and r.output:
@@ -228,13 +228,16 @@ class Orchestrator:
             )},
             {"role": "user", "content": (
                 f"Pedido original: {prompt}\n\n"
+                f"Validação: {validation.summary}; status={validation.status}.\n"
                 f"Resultados coletados:\n{results_block}{gaps_note}"
             )},
         ]
         try:
-            return await stream_or_complete(self.provider, messages, self._on_delta)
+            verdict = "Objetivo confirmado por evidência." if validation.success else "Resultado inconclusivo."
+            answer = await stream_or_complete(self.provider, messages, self._on_delta)
+            return f"{verdict}\n{validation.summary}{gaps_note}\n\n{answer}"
         except Exception as exc:
-            return f"{results_block}\n\n(síntese indisponível: {_describe_exception(exc)})"
+            return f"Resultado inconclusivo. {validation.summary}{gaps_note}\n{results_block}\n\n(síntese indisponível: {_describe_exception(exc)})"
 
     async def _run_agent(self, agent: str, prompt: str, history: list[dict[str, str]]) -> str:
         from agents.system_agent import SystemAgent
@@ -261,14 +264,14 @@ class Orchestrator:
                 tools = subset
         return "\n".join(f"- {t.name}: {t.description}" for t in tools)
 
-    def _decide_prompt(self, tool_block: str) -> str:
+    def _decide_prompt(self, tool_block: str, include_memory: bool = True) -> str:
         return (
             "You decide which tool answers the user. Tools:\n"
             f"{tool_block}\n"
             "Reply ONLY with a JSON object: {\"tool\": \"<name>\", \"args\": {…}} "
             "filling in the required args from the user's request. "
             "Use {\"tool\": null} if no tool is needed."
-            f"{_memory_snippet()}"
+            f"{_memory_snippet() if include_memory else ''}"
         )
 
     async def _run_with_tools(self, prompt: str, history: list[dict[str, str]],

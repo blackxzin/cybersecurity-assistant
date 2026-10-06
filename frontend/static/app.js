@@ -20,7 +20,7 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
     btn.classList.add("active");
     $("#view-" + btn.dataset.view).classList.add("active");
     if (btn.dataset.view === "dashboard") loadDashboard();
-    if (btn.dataset.view === "security") loadSecurity();
+    if (btn.dataset.view === "security") { loadSecurity(); loadFindings(); }
     if (btn.dataset.view === "logs") loadLogs();
     if (btn.dataset.view === "memory") { loadMemory(); loadLearning(); }
     if (btn.dataset.view === "settings") { loadSettings(); }
@@ -64,7 +64,7 @@ $("#chat-empty")?.querySelectorAll(".suggestion-chip").forEach((chip) => {
 // ---- character ----
 async function loadCharManifest() {
   try {
-    const r = await fetch("/static/character/states.json");
+    const r = await apiFetch("/static/character/states.json");
     state.states = (await r.json()).states;
   } catch {
     console.warn("manifest de personagem indisponível");
@@ -121,14 +121,18 @@ async function decideConfirm(approve) {
 
 // ---- chat (SSE) ----
 async function sendChat() {
+  if (chatBusy || !workspaceReady) return;
   const input = $("#chat-input");
   const text = input.value.trim();
   if (!text) return;
+  setChatBusy(true);
+  const taskId = startTaskUI();
   input.value = "";
   addMsg("user", text);
   charSet("thinking");
   charSay("Analisando…");
   const aiMsg = addMsg("ai", "…");
+  let wasCancelled = false;
 
   const readSSE = async (res) => {
     const reader = res.body.getReader();
@@ -150,6 +154,8 @@ async function sendChat() {
         const line = part.split("\n").find((l) => l.startsWith("data:"));
         if (!line) continue;
         const data = JSON.parse(line.slice(5));
+        if (data.cancelled) wasCancelled = true;
+        if (data.progress) document.querySelector("#task-progress").textContent = data.progress;
         if (data.error) throw new Error(data.error);
         if (typeof data.content !== "string") continue; // done/keepalive
         acc = data.content;
@@ -161,13 +167,14 @@ async function sendChat() {
   };
 
   try {
-    const res = await fetch("/api/chat", {
+    const res = await apiFetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, task_id: taskId }),
     });
     if (!res.ok) throw new Error("erro " + res.status);
     await readSSE(res);
+    await stopTaskUI();
 
     if (pendingState.action) {
       // a ação aguarda a decisão humana
@@ -176,8 +183,9 @@ async function sendChat() {
       const action = pendingState.action;
       await new Promise((resolve) => {
         pendingState.onDecide = async (approve) => {
+          const approvalTask = approve ? startTaskUI() : null;
           try {
-            const r = await fetch(`/api/actions/${action.id}/${approve ? "approve" : "deny"}`, {
+            const r = await apiFetch(`/api/actions/${action.id}/${approve ? "approve" : "deny"}${approvalTask ? "?task_id=" + approvalTask : ""}`, {
               method: "POST",
             });
             const d = await r.json();
@@ -186,11 +194,12 @@ async function sendChat() {
             aiMsg.innerHTML = esc(aiMsg.textContent).replace(/\n/g, "<br>");
             $("#messages").scrollTop = $("#messages").scrollHeight;
             charSet("talking");
-            charSay(approve ? "Ação aprovada!" : "Ação negada.");
+            charSay(d.status === "cancelled" ? "Execução cancelada." : (approve ? "Execução encerrada." : "Ação negada."));
             setTimeout(() => charSet("idle"), 2400);
           } catch (err) {
             toast("Decisão: " + err.message);
           }
+          if (approvalTask) await stopTaskUI();
           resolve();
         };
         showConfirm(action);
@@ -200,13 +209,16 @@ async function sendChat() {
     }
 
     charSet("talking");
-    charSay("Pronto!");
+    charSay(wasCancelled ? "Execução cancelada." : "Pronto!");
     setTimeout(() => charSet("idle"), 2400);
   } catch (err) {
     aiMsg.textContent = "⚠️ " + err.message;
     charSet("alert");
     charSay("Ops, deu erro.");
     setTimeout(() => charSet("idle"), 3000);
+  } finally {
+    await stopTaskUI();
+    setChatBusy(false);
   }
 }
 
@@ -220,7 +232,7 @@ async function termExec() {
   out.textContent += "\n$ " + cmd + "\n";
 
   try {
-    const r = await fetch("/api/terminal", {
+    const r = await apiFetch("/api/terminal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: cmd }),
@@ -252,7 +264,7 @@ function updateAlertBadge(n) {
 
 async function loadDashboard() {
   try {
-    const r = await fetch("/api/system");
+    const r = await apiFetch("/api/system");
     const d = await r.json();
     $("#dash-mem-detail").textContent = d.memory;
     $("#dash-disk-detail").textContent = d.disk;
@@ -271,7 +283,7 @@ const _SEVERITY_ICON = { high: "🔴", medium: "🟡", low: "🔵" };
 
 async function loadAlertsList() {
   try {
-    const r = await fetch("/api/alerts");
+    const r = await apiFetch("/api/alerts");
     const d = await r.json();
     $("#alerts-list").innerHTML = d.alerts.length
       ? d.alerts.map((a) => `
@@ -294,7 +306,7 @@ async function loadAlertsList() {
 
 async function ackAlert(id) {
   try {
-    const r = await fetch("/api/alerts/ack", {
+    const r = await apiFetch("/api/alerts/ack", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: Number(id) }),
@@ -314,7 +326,7 @@ const _CATEGORY_ORDER = [
 
 async function loadSecurity() {
   try {
-    const r = await fetch("/api/tools");
+    const r = await apiFetch("/api/tools");
     const d = await r.json();
     const groups = {};
     for (const t of d.tools) (groups[t.category] || (groups[t.category] = [])).push(t);
@@ -335,7 +347,7 @@ async function loadSecurity() {
 // ---- memória longa & aprendizado ----
 async function loadMemory() {
   try {
-    const r = await fetch("/api/memory");
+    const r = await apiFetch("/api/memory");
     const d = await r.json();
     $("#memory-list").innerHTML = d.facts.length
       ? d.facts.map((f) => `
@@ -355,7 +367,7 @@ async function loadMemory() {
 
 async function forgetMemory(id) {
   try {
-    const r = await fetch(`/api/memory/${id}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/memory/${id}`, { method: "DELETE" });
     if (!r.ok) throw new Error("falha ao esquecer");
     loadMemory();
   } catch (err) {
@@ -365,7 +377,7 @@ async function forgetMemory(id) {
 
 async function loadLearning() {
   try {
-    const r = await fetch("/api/learning/progress");
+    const r = await apiFetch("/api/learning/progress");
     const d = await r.json();
     $("#learning-list").innerHTML = d.progress.length
       ? d.progress.map((p) => `
@@ -382,7 +394,7 @@ async function loadLearning() {
 // ---- logs ----
 async function loadLogs() {
   try {
-    const r = await fetch("/api/security/events");
+    const r = await apiFetch("/api/security/events");
     const d = await r.json();
     $("#events-out").textContent = d.events.length
       ? d.events.map((e) => `[${e.level.toUpperCase()}] ${e.category} — ${e.description}`).join("\n")
@@ -395,7 +407,7 @@ async function loadLogs() {
 // ---- settings ----
 async function loadSettings() {
   try {
-    const r = await fetch("/api/health");
+    const r = await apiFetch("/api/health");
     const d = await r.json();
     const research = d.research_provider
       ? `<div class="tool"><b>Research</b> · ${esc(d.research_provider)} / ${esc(d.research_model || "?")}
@@ -416,7 +428,7 @@ async function loadSettings() {
 // ---- research provider (2° modelo, opcional — host/modelo/chave configuráveis na UI) ----
 async function loadResearchProviderConfig() {
   try {
-    const r = await fetch("/api/provider/research");
+    const r = await apiFetch("/api/provider/research");
     const d = await r.json();
     const select = $("#provider-select");
     select.innerHTML = `<option value="">(nenhum — usa só o principal)</option>` +
@@ -444,7 +456,7 @@ $("#provider-form").addEventListener("submit", async (e) => {
   const key = $("#provider-api-key").value.trim();
   if (key) body.api_key = key;
   try {
-    const r = await fetch("/api/provider/research", {
+    const r = await apiFetch("/api/provider/research", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -458,16 +470,26 @@ $("#provider-form").addEventListener("submit", async (e) => {
 });
 
 // ---- escopo autorizado ----
+let scopeLoadVersion = 0;
 async function loadScope() {
+  const version = ++scopeLoadVersion;
+  $("#scope-input").disabled = true;
+  $("#scope-form button").disabled = true;
   try {
-    const r = await fetch("/api/scope");
+    const r = await apiFetch("/api/scope");
     const d = await r.json();
+    if (version !== scopeLoadVersion) return;
     $("#scope-input").value = d.scope.join("\n");
     $("#scope-list").innerHTML = d.scope.length
       ? d.scope.map((p) => `<div class="tool">${esc(p)}</div>`).join("")
       : `<p class="muted">Sem escopo definido — ferramentas ofensivas rodam contra qualquer alvo.</p>`;
   } catch (err) {
     toast("Escopo: " + err.message);
+  } finally {
+    if (version === scopeLoadVersion) {
+      $("#scope-input").disabled = false;
+      $("#scope-form button").disabled = false;
+    }
   }
 }
 
@@ -478,7 +500,7 @@ $("#scope-form").addEventListener("submit", async (e) => {
     .map((s) => s.trim())
     .filter(Boolean);
   try {
-    const r = await fetch("/api/scope", {
+    const r = await apiFetch("/api/scope", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scope: patterns }),
@@ -549,7 +571,7 @@ async function micStart() {
         charSet("thinking"); charSay("Transcrevendo…");
         const fd = new FormData();
         fd.append("file", blob, "voice.webm");
-        const r = await fetch("/api/audio/transcribe", { method: "POST", body: fd });
+        const r = await apiFetch("/api/audio/transcribe", { method: "POST", body: fd });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || "STT falhou");
         if (d.text && d.text.trim()) {
@@ -595,7 +617,7 @@ $("#classify-form").addEventListener("submit", async (e) => {
   const cmd = $("#classify-input").value.trim();
   if (!cmd) return;
   try {
-    const r = await fetch("/api/safety/classify", {
+    const r = await apiFetch("/api/safety/classify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "command:" + cmd, risk: "moderate" }),
@@ -614,7 +636,7 @@ $("#memory-form").addEventListener("submit", async (e) => {
   if (!content) return;
   input.value = "";
   try {
-    const r = await fetch("/api/memory", {
+    const r = await apiFetch("/api/memory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
@@ -638,11 +660,13 @@ $("#confirm-modal").addEventListener("click", (e) => {
 
 // ---- boot ----
 (async function boot() {
+  await loadProjects();
+  await loadProjectHistory();
   await loadCharManifest();
   charSet("idle");
   charSay("Olá! Sou o Cyber. Pergunte sobre sua rede ou sistema.");
   try {
-    const r = await fetch("/api/health");
+    const r = await apiFetch("/api/health");
     const d = await r.json();
     const full = `${d.provider} / ${d.model} · ${d.safe_mode}`;
     $("#model-badge").textContent = `${d.provider} · ${d.safe_mode}`;

@@ -20,6 +20,10 @@ import re
 from urllib.parse import urlsplit
 
 from database import db as database
+from database.context import project_id
+
+def _scope_key():
+    return _SETTING_KEY if project_id.get() == 1 else f"authorized_scope:{project_id.get()}"
 
 _SETTING_KEY = "authorized_scope"
 # A CIDR pattern is "<ip>/<prefix>" — an address followed by digits, nothing
@@ -31,7 +35,7 @@ _CIDR_RE = re.compile(r"^[0-9a-fA-F.:]+/\d{1,3}$")
 
 
 def get_scope() -> list[str]:
-    raw = database.get_setting(_SETTING_KEY)
+    raw = database.get_setting(_scope_key())
     if not raw:
         return []
     return [p.strip() for p in raw.split(",") if p.strip()]
@@ -39,7 +43,7 @@ def get_scope() -> list[str]:
 
 def set_scope(patterns: list[str]) -> list[str]:
     cleaned = [p.strip() for p in patterns if p.strip()]
-    database.set_setting(_SETTING_KEY, ",".join(cleaned))
+    database.set_setting(_scope_key(), ",".join(cleaned))
     return cleaned
 
 

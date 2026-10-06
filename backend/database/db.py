@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import DB_PATH, DATA_DIR, LOG_DIR
+from database.context import project_id
 
 _LOCK = threading.RLock()
 
@@ -123,9 +124,37 @@ def db():
 def init_db() -> None:
     with db() as conn:
         conn.executescript(SCHEMA)
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id),
+            tool_call_id INTEGER REFERENCES tool_calls(id) ON DELETE CASCADE,
+            title TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'info',
+            evidence TEXT NOT NULL, impact TEXT NOT NULL DEFAULT '',
+            remediation TEXT NOT NULL DEFAULT '',
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        """)
+        conn.execute("INSERT OR IGNORE INTO projects(id, name, created_at) VALUES(1, ?, ?)",
+                     ("Geral / histórico anterior", _now()))
+        # Additive, idempotent migration: legacy rows belong only to project 1.
+        for table in _PROJECT_TABLES:
+            columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if "project_id" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1")
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_project ON {table}(project_id)")
 
+
+
+_PROJECT_TABLES = ("conversations", "tool_calls", "alerts", "security_events", "memory")
 
 _TABLES = frozenset({
+    "projects", "findings",
     "conversations", "messages", "tool_calls", "security_events",
     "alerts", "settings", "memory", "snapshots", "learning_progress",
 })
@@ -139,6 +168,8 @@ def insert(table: str, **values: Any) -> int:
     # ever violated by a future caller.
     if table not in _TABLES:
         raise ValueError(f"insert(): unknown table {table!r}")
+    if table in _PROJECT_TABLES:
+        values.setdefault("project_id", project_id.get())
     cols = ", ".join(values)
     marks = ", ".join("?" * len(values))
     with db() as conn:
@@ -174,17 +205,18 @@ def insert_alert(severity: str, title: str, description: str) -> int:
 def get_alert_counts() -> dict[str, int]:
     with db() as conn:
         rows = conn.execute(
-            "SELECT severity, COUNT(*) AS n FROM alerts WHERE acknowledged=0 GROUP BY severity"
+            "SELECT severity, COUNT(*) AS n FROM alerts WHERE acknowledged=0 AND project_id=? GROUP BY severity",
+            (project_id.get(),)
         ).fetchall()
     return {r["severity"]: r["n"] for r in rows}
 
 
 def save_messages(messages: list[dict[str, str]]) -> int:
-    """Persist a user+assistant pair; return the assistant message id."""
+    """Persist a turn in the current project; return the conversation id."""
     with db() as conn:
         conv = conn.execute(
-            "INSERT INTO conversations (title, created_at, updated_at) VALUES (?,?,?)",
-            ("Nova conversa", _now(), _now()),
+            "INSERT INTO conversations (title, created_at, updated_at, project_id) VALUES (?,?,?,?)",
+            (messages[0]["content"][:80] if messages else "Nova conversa", _now(), _now(), project_id.get()),
         ).lastrowid
         for m in messages:
             conn.execute(
@@ -200,9 +232,9 @@ def history(limit: int = 12) -> list[dict[str, Any]]:
             """
             SELECT m.id, m.role, m.content, m.created_at, c.title
             FROM messages m JOIN conversations c ON c.id = m.conversation_id
-            ORDER BY m.id DESC LIMIT ?
+            WHERE c.project_id=? ORDER BY m.id DESC LIMIT ?
             """,
-            (limit,),
+            (project_id.get(), limit),
         ).fetchall()
     return [dict(r) for r in reversed(rows)]
 
@@ -210,7 +242,7 @@ def history(limit: int = 12) -> list[dict[str, Any]]:
 def recent_conversation_id() -> int | None:
     with db() as conn:
         row = conn.execute(
-            "SELECT id FROM conversations ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM conversations WHERE project_id=? ORDER BY id DESC LIMIT 1", (project_id.get(),)
         ).fetchone()
     return row["id"] if row else None
 
@@ -220,7 +252,7 @@ def log_tool_call(tool: str, args: dict, result: str, risk: str = "info", status
         "tool_calls",
         tool=tool,
         args=json.dumps(args, default=str),
-        result=result[:2000],
+        result=result,
         risk=risk,
         status=status,
         created_at=_now(),
@@ -229,6 +261,8 @@ def log_tool_call(tool: str, args: dict, result: str, risk: str = "info", status
 
 def get_snapshot(kind: str, key: str) -> str | None:
     """Read the last stored snapshot for (kind, key) — e.g. ('nmap', host)."""
+    if project_id.get() != 1:
+        key = f"project:{project_id.get()}:{key}"
     with db() as conn:
         row = conn.execute(
             "SELECT content FROM snapshots WHERE kind=? AND key=?", (kind, key)
@@ -237,6 +271,8 @@ def get_snapshot(kind: str, key: str) -> str | None:
 
 
 def save_snapshot(kind: str, key: str, content: str) -> None:
+    if project_id.get() != 1:
+        key = f"project:{project_id.get()}:{key}"
     with db() as conn:
         conn.execute(
             "INSERT INTO snapshots (kind, key, content, updated_at) VALUES (?,?,?,?) "
@@ -268,20 +304,20 @@ def list_memory(kind: str | None = None, limit: int = 20) -> list[dict[str, Any]
     with db() as conn:
         if kind:
             rows = conn.execute(
-                "SELECT id, kind, content, created_at FROM memory WHERE kind=? ORDER BY id DESC LIMIT ?",
-                (kind, limit),
+                "SELECT id, kind, content, created_at FROM memory WHERE kind=? AND project_id=? ORDER BY id DESC LIMIT ?",
+                (kind, project_id.get(), limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, kind, content, created_at FROM memory ORDER BY id DESC LIMIT ?",
-                (limit,),
+                "SELECT id, kind, content, created_at FROM memory WHERE project_id=? ORDER BY id DESC LIMIT ?",
+                (project_id.get(), limit),
             ).fetchall()
     return [dict(r) for r in rows]
 
 
 def delete_memory(memory_id: int) -> bool:
     with db() as conn:
-        cur = conn.execute("DELETE FROM memory WHERE id=?", (memory_id,))
+        cur = conn.execute("DELETE FROM memory WHERE id=? AND project_id=?", (memory_id, project_id.get()))
     return cur.rowcount > 0
 
 
